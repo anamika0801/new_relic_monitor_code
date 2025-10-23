@@ -6,9 +6,6 @@ jobs:
   deploy-dashboards:
     runs-on: ubuntu-latest
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
     
     # Define environment variables used throughout the job
     env:
