@@ -1,36 +1,20 @@
-const got = require('got');
+// monitors/api-check.js
+/**
+ * Scripted API Monitor to check a sample public API.
+ */
+const assert = require('assert');
 
-const endpoint = 'https://api.example.com/health';
+const targetUrl = 'https://api.publicapis.org/entries';
 
-async function checkApi() {
-  console.log(`Checking API endpoint: ${endpoint}`);
+// Make a GET request
+$http.get(targetUrl, (err, response, body) => {
+  assert.equal(err, null, 'Request failed: Network Error');
+  assert.equal(response.statusCode, 200, 'Expected a 200 OK response');
 
-  try {
-    const response = await got(endpoint, {
-      throwHttpErrors: false,
-      timeout: { request: 5000 },
-    });
+  const data = JSON.parse(body);
 
-    
-    assert.ok(
-      response.statusCode === 200,
-      `Expected a 200 status code but got ${response.statusCode}`
-    );
+  // Assert that the response contains at least one entry
+  assert.ok(data.count > 0, 'No entries found in the API response');
 
-   
-    const body = JSON.parse(response.body);
-
-  
-    assert.ok(
-      body.status === 'ok',
-      `Expected status 'ok' but got '${body.status}'`
-    );
-
-    console.log('Monitor check passed successfully!');
-  } catch (error) {
-    console.error('Monitor check failed:', error);
-    assert.fail(error.message);
-  }
-}
-
-checkApi();
+  console.log('API check successful. Found ' + data.count + ' entries.');
+});
