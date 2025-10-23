@@ -1,16 +1,14 @@
 name: New Relic Scripted API Monitor
-
 on:
-  push:
-    branches:
-      - main
-    # Trigger when the monitor script file is changed
-    paths:
-      - 'monitors/ap-api-monitor-conf-script.js'
+  workflow_dispatch:  # Manual trigger only
 
 jobs:
-  upsert_monitor:
+  deploy-dashboards:
     runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
     
     # Define environment variables used throughout the job
     env:
