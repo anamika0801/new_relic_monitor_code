@@ -4,12 +4,21 @@ on:
   push:
     branches:
       - main
+    # Trigger when the monitor script file is changed
     paths:
-      - 'monitors/ap-api-monitor-conf-script.js' # Trigger when the script changes
+      - 'monitors/ap-api-monitor-conf-script.js'
 
 jobs:
   upsert_monitor:
     runs-on: ubuntu-latest
+    
+    # Define environment variables used throughout the job
+    env:
+      NR_ACCOUNT_ID: ${{ secrets.NEW_RELIC_ACCOUNT_ID }}
+      NR_API_KEY: ${{ secrets.NEW_RELIC_API_KEY }}
+      MONITOR_NAME: 'Public API Check - GH Actions (6-hr)'
+      MONITOR_URI: 'https://placeholder.com'
+      
     steps:
       - name: 1. Checkout repository
         uses: actions/checkout@v4
@@ -21,33 +30,20 @@ jobs:
           SCRIPT_CONTENT=$(cat monitors/ap-api-monitor-conf-script.js)
           
           # Escape the content for inclusion as a JSON string literal.
-          # We use jq -Rs . to read the script as a raw string and escape newlines/quotes.
+          # jq -Rs . reads raw text and outputs it as a safe JSON string (e.g., handles newlines, quotes).
           ESCAPED_SCRIPT=$(echo "$SCRIPT_CONTENT" | jq -Rs .)
           
-          # Pass the escaped script content to the next steps as a workflow output
+          # Pass the escaped script content to the next step
           echo "escaped_script=$ESCAPED_SCRIPT" >> $GITHUB_OUTPUT
 
-      - name: 3. Create/Update Scripted API Monitor via NerdGraph
+      - name: 3. Create Scripted API Monitor via NerdGraph
         env:
-          NR_API_KEY: ${{ secrets.NEW_RELIC_API_KEY }}
-          NR_ACCOUNT_ID: ${{ secrets.NEW_RELIC_ACCOUNT_ID }}
-          # The escaped script content from the previous step
           SCRIPT_TO_DEPLOY: ${{ steps.script_data.outputs.escaped_script }}
-          MONITOR_NAME: 'Public API Check - GH Actions'
-          MONITOR_URI: 'https://placeholder.com' # Required field, but mostly placeholder for scripted API
           
         run: |
-          # --- A. Define the GraphQL Mutation with Monitor Details ---
-          # We use a mutation variable for the complex 'script' content for better safety and readability.
-          # Note: We use the *update* mutation, assuming this is an idempotent deployment.
-          # The monitor's GUID would be required for a pure update. 
-          # For a true upsert (create or update), a more complex script is needed 
-          # to check for existence first. For simplicity here, we use a single 'create' mutation.
-          
-          # IMPORTANT: For an actual upsert logic, you'd first QUERY for the monitor's GUID, 
-          # then decide whether to run 'syntheticsCreateScriptedApiMonitor' or 'syntheticsUpdateScriptedApiMonitor'.
-          # For this example, we'll demonstrate a **creation** with the proper structure.
-          
+          # --- A. Define the FIXED GraphQL Mutation ---
+          # Uses the corrected mutation name (syntheticsCreateScriptedApiMonitor)
+          # Uses the requested period (EVERY_6_HOURS) and locations (Washington, Stockholm)
           GRAPHQL_MUTATION=$(cat <<EOF
             mutation CreateMonitor(\$scriptContent: String!) {
               syntheticsCreateScriptedApiMonitor(
@@ -55,9 +51,9 @@ jobs:
                 monitor: {
                   name: "$MONITOR_NAME",
                   locations: {
-                    public: ["AWS_US_EAST_1", "AWS_EU_CENTRAL_1", "GCP_AUSTRALIA_EAST_1"]
+                    public: ["AWS_US_EAST_1", "AWS_EU_NORTH_1"] # Washington & Stockholm
                   },
-                  period: EVERY_5_MINUTES,
+                  period: EVERY_6_HOURS, # 6 hours interval
                   status: ENABLED,
                   uri: "$MONITOR_URI",
                   runtime: {
@@ -65,8 +61,7 @@ jobs:
                     runtimeTypeVersion: "16.10",
                     scriptLanguage: JAVASCRIPT
                   },
-                  # Pass the escaped script content from the variable
-                  script: \$scriptContent
+                  script: \$scriptContent # Script content passed via variable
                 }
               ) {
                 errors {
@@ -84,8 +79,6 @@ jobs:
           )
           
           # --- B. Construct the final JSON payload for the API request ---
-          # The payload includes the query and the variables.
-          # SCRIPT_TO_DEPLOY is the value from the previous step (Output 2)
           JSON_PAYLOAD=$(cat <<EOF
           {
             "query": $(echo "$GRAPHQL_MUTATION" | jq -Rs .),
