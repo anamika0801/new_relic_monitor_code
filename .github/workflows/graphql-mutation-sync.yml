@@ -1,4 +1,4 @@
-name: New Relic Scripted API Monitor
+name: New Relic Scripted API Monitor configration
 on:
   workflow_dispatch:  # Manual trigger only
 
