@@ -1,41 +1,107 @@
-name: Sync New Relic Monitor via NerdGraph
+name: New Relic Scripted API Monitor
 
 on:
   push:
     branches:
       - main
     paths:
-      - 'monitors/**'
+      - 'monitors/ap-api-monitor-conf-script.js' # Trigger when the script changes
 
 jobs:
-  sync-monitors:
+  upsert_monitor:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: 1. Checkout repository
         uses: actions/checkout@v4
 
-      - name: Create or Update Scripted Monitor
-        env:
-          NEW_RELIC_API_KEY: ${{ secrets.NEW_RELIC_API_KEY }}
-          ACCOUNT_ID: 7273540 
-          MONITOR_NAME: "API Monitor "
-          MONITOR_CONFIG_PATH: "./monitors/ap-api-monitor.json"
-          MONITOR_SCRIPT_PATH: "./monitors/ap-api-monitor-conf-script.js"
+      - name: 2. Read Monitor Script and Escape for JSON
+        id: script_data
         run: |
-          # Read the monitor script file and Base64 encode it
-          SCRIPT_BASE64=$(base64 -w 0 < "$MONITOR_SCRIPT_PATH")
+          # Read the raw script file content
+          SCRIPT_CONTENT=$(cat monitors/ap-api-monitor-conf-script.js)
+          
+          # Escape the content for inclusion as a JSON string literal.
+          # We use jq -Rs . to read the script as a raw string and escape newlines/quotes.
+          ESCAPED_SCRIPT=$(echo "$SCRIPT_CONTENT" | jq -Rs .)
+          
+          # Pass the escaped script content to the next steps as a workflow output
+          echo "escaped_script=$ESCAPED_SCRIPT" >> $GITHUB_OUTPUT
 
-          # Read the monitor configuration from the JSON file
-          MONITOR_CONFIG=$(cat "$MONITOR_CONFIG_PATH" | tr -d '\n' | tr -d ' ' )
-
-          # Get the full JSON payload
-          PAYLOAD="{\"query\":\"mutation(\$accountId:Int!,\$monitor:SyntheticsScriptedApiMonitorInput!,\$script:SyntheticsMonitorScriptInput!){syntheticsCreateScriptApiMonitor(accountId:\$accountId,monitor:\$monitor,script:\$script){monitor{guid,name},errors{message}}}\",\"variables\":{\"accountId\":$ACCOUNT_ID,\"monitor\":$MONITOR_CONFIG,\"script\":{\"scriptText\":\"$SCRIPT_BASE64\"}}}"
-
-          # Execute the NerdGraph mutation using curl
-          # NOTE: The mutation is hardcoded here for simplicity. You may need to
-          # retrieve the monitor GUID for updates. This example only handles creation.
-          curl -s -X POST \
+      - name: 3. Create/Update Scripted API Monitor via NerdGraph
+        env:
+          NR_API_KEY: ${{ secrets.NEW_RELIC_API_KEY }}
+          NR_ACCOUNT_ID: ${{ secrets.NEW_RELIC_ACCOUNT_ID }}
+          # The escaped script content from the previous step
+          SCRIPT_TO_DEPLOY: ${{ steps.script_data.outputs.escaped_script }}
+          MONITOR_NAME: 'Public API Check - GH Actions'
+          MONITOR_URI: 'https://placeholder.com' # Required field, but mostly placeholder for scripted API
+          
+        run: |
+          # --- A. Define the GraphQL Mutation with Monitor Details ---
+          # We use a mutation variable for the complex 'script' content for better safety and readability.
+          # Note: We use the *update* mutation, assuming this is an idempotent deployment.
+          # The monitor's GUID would be required for a pure update. 
+          # For a true upsert (create or update), a more complex script is needed 
+          # to check for existence first. For simplicity here, we use a single 'create' mutation.
+          
+          # IMPORTANT: For an actual upsert logic, you'd first QUERY for the monitor's GUID, 
+          # then decide whether to run 'syntheticsCreateScriptedApiMonitor' or 'syntheticsUpdateScriptedApiMonitor'.
+          # For this example, we'll demonstrate a **creation** with the proper structure.
+          
+          GRAPHQL_MUTATION=$(cat <<EOF
+            mutation CreateMonitor(\$scriptContent: String!) {
+              syntheticsCreateScriptedApiMonitor(
+                accountId: $NR_ACCOUNT_ID,
+                monitor: {
+                  name: "$MONITOR_NAME",
+                  locations: {
+                    public: ["AWS_US_EAST_1", "AWS_EU_CENTRAL_1", "GCP_AUSTRALIA_EAST_1"]
+                  },
+                  period: EVERY_5_MINUTES,
+                  status: ENABLED,
+                  uri: "$MONITOR_URI",
+                  runtime: {
+                    runtimeType: NODE_API,
+                    runtimeTypeVersion: "16.10",
+                    scriptLanguage: JAVASCRIPT
+                  },
+                  # Pass the escaped script content from the variable
+                  script: \$scriptContent
+                }
+              ) {
+                errors {
+                  description
+                  type
+                }
+                monitor {
+                  guid
+                  name
+                  status
+                }
+              }
+            }
+          EOF
+          )
+          
+          # --- B. Construct the final JSON payload for the API request ---
+          # The payload includes the query and the variables.
+          # SCRIPT_TO_DEPLOY is the value from the previous step (Output 2)
+          JSON_PAYLOAD=$(cat <<EOF
+          {
+            "query": $(echo "$GRAPHQL_MUTATION" | jq -Rs .),
+            "variables": {
+              "scriptContent": $SCRIPT_TO_DEPLOY
+            }
+          }
+          EOF
+          )
+          
+          # --- C. Execute the curl command against the NerdGraph API ---
+          echo "Sending NerdGraph Payload..."
+          echo "$JSON_PAYLOAD" | jq .
+          
+          # Send the request and print the response
+          curl -s -X POST 'https://api.newrelic.com/graphql' \
             -H "Content-Type: application/json" \
-            -H "API-Key: $NEW_RELIC_API_KEY" \
-            "https://api.newrelic.com/graphql" \
-            --data-raw "$PAYLOAD"
+            -H "Api-Key: $NR_API_KEY" \
+            --data-raw "$JSON_PAYLOAD" | jq .
