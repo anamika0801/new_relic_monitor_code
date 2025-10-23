@@ -1,95 +1,157 @@
-name: New Relic Scripted API Monitor configration
+name: New Relic monitor
+
 on:
   workflow_dispatch:  # Manual trigger only
 
 jobs:
-  deploy-dashboards:
+  deploy-monitors:
     runs-on: ubuntu-latest
 
-    
-    # Define environment variables used throughout the job
-    env:
-      NR_ACCOUNT_ID: ${{ secrets.NEW_RELIC_ACCOUNT_ID }}
-      NR_API_KEY: ${{ secrets.NEW_RELIC_API_KEY }}
-      MONITOR_NAME: 'Public API Check - GH Actions (6-hr)'
-      MONITOR_URI: 'https://placeholder.com'
-      
     steps:
-      - name: 1. Checkout repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: 2. Read Monitor Script and Escape for JSON
-        id: script_data
-        run: |
-          # Read the raw script file content
-          SCRIPT_CONTENT=$(cat monitors/ap-api-monitor-conf-script.js)
-          
-          # Escape the content for inclusion as a JSON string literal.
-          # jq -Rs . reads raw text and outputs it as a safe JSON string (e.g., handles newlines, quotes).
-          ESCAPED_SCRIPT=$(echo "$SCRIPT_CONTENT" | jq -Rs .)
-          
-          # Pass the escaped script content to the next step
-          echo "escaped_script=$ESCAPED_SCRIPT" >> $GITHUB_OUTPUT
-
-      - name: 3. Create Scripted API Monitor via NerdGraph
+      - name: Deploy monitors
         env:
-          SCRIPT_TO_DEPLOY: ${{ steps.script_data.outputs.escaped_script }}
-          
+          ALL_SECRETS: ${{ toJSON(secrets) }}
         run: |
-          # --- A. Define the FIXED GraphQL Mutation ---
-          # Uses the corrected mutation name (syntheticsCreateScriptedApiMonitor)
-          # Uses the requested period (EVERY_6_HOURS) and locations (Washington, Stockholm)
-          GRAPHQL_MUTATION=$(cat <<EOF
-            mutation CreateMonitor(\$scriptContent: String!) {
-              syntheticsCreateScriptedApiMonitor(
-                accountId: $NR_ACCOUNT_ID,
-                monitor: {
-                  name: "$MONITOR_NAME",
-                  locations: {
-                    public: ["AWS_US_EAST_1", "AWS_EU_NORTH_1"] # Washington & Stockholm
-                  },
-                  period: EVERY_6_HOURS, # 6 hours interval
-                  status: ENABLED,
-                  uri: "$MONITOR_URI",
-                  runtime: {
-                    runtimeType: NODE_API,
-                    runtimeTypeVersion: "16.10",
-                    scriptLanguage: JAVASCRIPT
-                  },
-                  script: \$scriptContent # Script content passed via variable
-                }
-              ) {
-                errors {
-                  description
-                  type
-                }
-                monitor {
-                  guid
-                  name
-                  status
-                }
-              }
-            }
-          EOF
-          )
-          
-          # --- B. Construct the final JSON payload for the API request ---
-          JSON_PAYLOAD=$(cat <<EOF
+          echo "🚀 Starting manual monitor deployment..."
+
+          if [ ! -f monitors/manifest.json ]; then
+            echo "::error::Manifest file not found at monitors/manifest.json"
+            exit 1
+          fi
+
+          jq -r -c '.[]' monitors/manifest.json | while read -r entry; do
+            FILE_PATH=$(echo "$entry" | jq -r '.filePath')
+            ACCOUNT_ID=$(echo "$entry" | jq -r '.accountId')
+            API_KEY_SECRET_NAME=$(echo "$entry" | jq -r '.apiKeySecretName')
+            API_KEY=$(echo "$ALL_SECRETS" | jq -r ".\"$API_KEY_SECRET_NAME\"")
+            GUID=$(echo "$entry" | jq -r '.guid')
+
+            if [ -z "$API_KEY" ] || [ "$API_KEY" == "null" ]; then
+              echo "::error::Secret '$API_KEY_SECRET_NAME' not found in GitHub secrets."
+              exit 1
+            fi
+
+            if [ ! -f "$FILE_PATH" ]; then
+              echo "::error::monitor file '$FILE_PATH' not found."
+              exit 1
+            fi
+
+            echo "📄 Deploying monitor: $FILE_PATH"
+
+            monitor_CONTENT=$(cat "$FILE_PATH")
+            echo "$monitor_CONTENT" | jq . > /dev/null
+            if [ $? -ne 0 ]; then
+              echo "::error::Invalid JSON in $FILE_PATH"
+              exit 1
+            fi
+
+            # 🧼 Sanitize monitor JSON
+            SANITIZED_monitor=$(echo "$monitor_CONTENT" | jq 'del(.pages[].guid) | .pages[].widgets |= map(del(.id))')
+
+            # 🎯 Update existing monitor using monitorUpdate
+            if [ -n "$GUID" ] && [ "$GUID" != "null" ]; then
+              echo "🔄 Updating monitor with GUID: $GUID"
+
+              # Create a temporary file to store the GraphQL mutation
+              GRAPHQL_FILE=$(mktemp)
+
+              # Prepare the GraphQL mutation JSON and write it to the temporary file
+              # We pipe the monitor JSON in via stdin (using '.') to avoid "Argument list too long"
+              echo "Fetching monitor details for: $MONITOR_NAME"
+          QUERY_PAYLOAD=$(cat <<EOF
           {
-            "query": $(echo "$GRAPHQL_MUTATION" | jq -Rs .),
-            "variables": {
-              "scriptContent": $SCRIPT_TO_DEPLOY
-            }
+            "query": "query GetMonitorDetails { actor { account(id: $NR_ACCOUNT_ID) { synthetics { monitors(query: {name: \"$MONITOR_NAME\"}) { monitors { guid status } } } } } }",
+            "variables": {}
           }
           EOF
           )
           
-          # --- C. Execute the curl command against the NerdGraph API ---
-          echo "Sending NerdGraph Payload..."
-          echo "$JSON_PAYLOAD" | jq .
-          
-          # Send the request and print the response
-          curl -s -X POST 'https://api.newrelic.com/graphql' \
+          RESPONSE=$(curl -s -X POST 'https://api.newrelic.com/graphql' \
             -H "Content-Type: application/json" \
             -H "Api-Key: $NR_API_KEY" \
-            --data-raw "$JSON_PAYLOAD" | jq .
+            --data-raw "$QUERY_PAYLOAD")
+
+          # Extract GUID and current STATUS using jq
+          MONITOR_GUID=$(echo "$RESPONSE" | jq -r '.data.actor.account.synthetics.monitors.monitors[0].guid')
+          CURRENT_STATUS=$(echo "$RESPONSE" | jq -r '.data.actor.account.synthetics.monitors.monitors[0].status')
+
+          if [ -z "$MONITOR_GUID" ] || [ "$MONITOR_GUID" == "null" ]; then
+            echo "Error: Monitor named '$MONITOR_NAME' not found or failed to retrieve details."
+            exit 1
+          fi
+
+          echo "Found monitor GUID: $MONITOR_GUID"
+          echo "Current Status: $CURRENT_STATUS"
+          
+          # --- 2. Logic: Determine the new status ---
+          NEW_STATUS=""
+          if [ "$CURRENT_STATUS" == "ENABLED" ]; then
+            NEW_STATUS="DISABLED"
+          elif [ "$CURRENT_STATUS" == "DISABLED" ]; then
+            NEW_STATUS="ENABLED"
+          else
+            echo "Warning: Current status '$CURRENT_STATUS' is unexpected. Setting to ENABLED."
+            NEW_STATUS="ENABLED"
+          fi
+          
+          echo "Setting New Status: $NEW_STATUS"
+          
+          # --- 3. Mutation: Execute the update ---
+          MUTATION_PAYLOAD=$(cat <<EOF
+          {
+            "query": "mutation ToggleMonitorStatus(\$monitorGuid: EntityGuid!, \$newStatus: SyntheticsMonitorStatus!) { syntheticsUpdateScriptApiMonitor(guid: \$monitorGuid, monitor: { status: \$newStatus }) { errors { description type } monitor { guid name status } } }",
+            "variables": {
+              "monitorGuid": "$MONITOR_GUID",
+              "newStatus": "$NEW_STATUS"
+            }
+          }
+          EOF
+          ) > "$GRAPHQL_FILE"
+
+              # Send the GraphQL request using curl and the temporary file
+              RESPONSE=$(curl -s -X POST https://api.newrelic.com/graphql \
+                -H "Content-Type: application/json" \
+                -H "API-Key: ${API_KEY}" \
+                --data-binary "@$GRAPHQL_FILE")
+
+              # Clean up the temporary file
+              rm "$GRAPHQL_FILE"
+
+              echo "📡 API Response: $RESPONSE"
+
+              # 🚨 Error checks
+
+              # Top-level GraphQL errors
+              TOP_LEVEL_ERRORS=$(echo "$RESPONSE" | jq -r '.errors[]?.message')
+              if [ "$TOP_LEVEL_ERRORS" != "null" ] && [ -n "$TOP_LEVEL_ERRORS" ]; then
+                echo "::error::GraphQL top-level error for $FILE_PATH: $TOP_LEVEL_ERRORS"
+                exit 1
+              fi
+
+              # Errors inside monitorUpdate
+              UPDATE_ERRORS=$(echo "$RESPONSE" | jq -r '.data.monitorUpdate.errors[]?.description')
+              if [ "$UPDATE_ERRORS" != "null" ] && [ -n "$UPDATE_ERRORS" ]; then
+                echo "::error::monitor update failed for $FILE_PATH: $UPDATE_ERRORS"
+                exit 1
+              fi
+
+              # Null monitorUpdate (unexpected)
+              monitor_UPDATE_NULL=$(echo "$RESPONSE" | jq -r '.data.monitorUpdate == null')
+              if [ "$monitor_UPDATE_NULL" == "true" ]; then
+                echo "::error::monitor update failed for $FILE_PATH: monitorUpdate returned null"
+                exit 1
+              fi
+
+              echo "✅ monitor updated successfully."
+
+            else
+              echo "::warning::No GUID provided. Skipping update for $FILE_PATH."
+            fi
+
+            echo "-------------------------------------------------------------"
+          done
+
+          echo "🎉 monitor deployment complete!"
