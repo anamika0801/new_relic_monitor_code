@@ -1,0 +1,41 @@
+name: Sync New Relic Monitor via NerdGraph
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'monitors/**'
+
+jobs:
+  sync-monitors:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create or Update Scripted Monitor
+        env:
+          NEW_RELIC_API_KEY: ${{ secrets.NEW_RELIC_API_KEY }}
+          ACCOUNT_ID: 7273540 
+          MONITOR_NAME: "API Monitor "
+          MONITOR_CONFIG_PATH: "./monitors/ap-api-monitor.json"
+          MONITOR_SCRIPT_PATH: "./monitors/ap-api-monitor-conf-script.js"
+        run: |
+          # Read the monitor script file and Base64 encode it
+          SCRIPT_BASE64=$(base64 -w 0 < "$MONITOR_SCRIPT_PATH")
+
+          # Read the monitor configuration from the JSON file
+          MONITOR_CONFIG=$(cat "$MONITOR_CONFIG_PATH" | tr -d '\n' | tr -d ' ' )
+
+          # Get the full JSON payload
+          PAYLOAD="{\"query\":\"mutation(\$accountId:Int!,\$monitor:SyntheticsScriptedApiMonitorInput!,\$script:SyntheticsMonitorScriptInput!){syntheticsCreateScriptApiMonitor(accountId:\$accountId,monitor:\$monitor,script:\$script){monitor{guid,name},errors{message}}}\",\"variables\":{\"accountId\":$ACCOUNT_ID,\"monitor\":$MONITOR_CONFIG,\"script\":{\"scriptText\":\"$SCRIPT_BASE64\"}}}"
+
+          # Execute the NerdGraph mutation using curl
+          # NOTE: The mutation is hardcoded here for simplicity. You may need to
+          # retrieve the monitor GUID for updates. This example only handles creation.
+          curl -s -X POST \
+            -H "Content-Type: application/json" \
+            -H "API-Key: $NEW_RELIC_API_KEY" \
+            "https://api.newrelic.com/graphql" \
+            --data-raw "$PAYLOAD"
