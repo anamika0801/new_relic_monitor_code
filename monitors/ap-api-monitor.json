@@ -1,28 +1,17 @@
 {
-  "name": "API Monitor ",
-  "period": "EVERY_15_MINUTES",
-  "locations": [
-    "AWS_US_EAST_1",
-    "AWS_EU_CENTRAL_1"
-  ],
-  "runtime": {
-    "runtimeType": "NODE_API",
-    "runtimeVersion": "16.10",
-    "runtimeTypeDisplayName": "Node.js"
-  },
-  "status": "ENABLED",
-  "tags": [
-    {
-      "key": "owner",
-      "values": [
-        "devops"
-      ]
-    },
-    {
-      "key": "app",
-      "values": [
-        "payment-service"
-      ]
+  "data": {
+    "actor": {
+      "account": {
+        "synthetics": {
+          "script": {
+            "text": "// Import the 'assert' module for validation\nvar assert = require(\"assert\");\n\n// Define the options for the HTTP request\nvar options = {\n  url: \"https://www.newrelic.com\",\n};\n\n// Define the callback function to handle the response\nfunction callback(error, response, body) {\n  // Log the HTTP status code to the Synthetics console\n  console.log(\"Status code: \" + response.statusCode);\n\n  // Assert that the status code is 200\n  assert.equal(response.statusCode, 200, \"Expected a 200 OK response\");\n\n  // Log a success message if the test passes\n  console.log(\"Monitor finished successfully!\");\n}\n\n// Make the HTTP GET request\n$http.get(options, callback);\n"
+          }
+        }
+      },
+      "entity": {
+        "guid": "NzI3MzU0MHxTWU5USHxNT05JVE9SfGUyNDU3NTQ2LTNiMDMtNDRlMi1hMjBhLWNkYjhkYzk0OWYwNw",
+        "name": "sli.tracking.new_relic"
+      }
     }
-  ]
+  }
 }
