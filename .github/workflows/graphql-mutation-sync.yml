@@ -64,8 +64,8 @@ jobs:
               
               # 1. Fetch current status using GUID from manifest
               
-              QUERY_PAYLOAD=$(jq -n --arg account_id "$ACCOUNT_ID" --arg guid "$GUID" '{
-                query: "query GetMonitorDetails($guid: EntityGuid!) { actor { entity(guid: $guid) { ... on SyntheticMonitor { status } } } }",
+            QUERY_PAYLOAD=$(jq -n --arg account_id "$ACCOUNT_ID" --arg guid "$GUID" '{
+                query: "query GetMonitorStatus($guid: EntityGuid!) { actor { account(id: $account_id) { synthetics { monitor(guid: $guid) { status } } } } }",
                 variables: { guid: $guid }
               }')
               
@@ -75,7 +75,7 @@ jobs:
                 --data-raw "$QUERY_PAYLOAD")
 
               # Extract CURRENT_STATUS using jq
-              CURRENT_STATUS=$(echo "$RESPONSE" | jq -r '.data.actor.entity.status')
+              CURRENT_STATUS=$(echo "$RESPONSE" | jq -r '.data.actor.account.synthetics.monitor.status')
 
               if [ -z "$CURRENT_STATUS" ] || [ "$CURRENT_STATUS" == "null" ]; then
                 echo "Error: Monitor GUID '$GUID' not found or failed to retrieve details."
