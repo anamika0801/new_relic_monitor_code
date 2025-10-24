@@ -11,23 +11,33 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Install JQ (if not available)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
       - name: Deploy monitors
         env:
           ALL_SECRETS: ${{ toJSON(secrets) }}
         run: |
           echo "🚀 Starting manual monitor deployment..."
 
-          if [ ! -f monitors/manifest.json ]; then
-            echo "::error::Manifest file not found at monitors/manifest.json"
+          MANIFEST_PATH="monitors/manifest.json"
+
+          if [ ! -f "$MANIFEST_PATH" ]; then
+            echo "::error::Manifest file not found at $MANIFEST_PATH"
             exit 1
           fi
 
-          jq -r -c '.[]' monitors/manifest.json | while read -r entry; do
+          jq -r -c '.[]' "$MANIFEST_PATH" | while read -r entry; do
             FILE_PATH=$(echo "$entry" | jq -r '.filePath')
             ACCOUNT_ID=$(echo "$entry" | jq -r '.accountId')
             API_KEY_SECRET_NAME=$(echo "$entry" | jq -r '.apiKeySecretName')
-            API_KEY=$(echo "$ALL_SECRETS" | jq -r ".\"$API_KEY_SECRET_NAME\"")
             GUID=$(echo "$entry" | jq -r '.guid')
+            # Assuming manifest.json is updated to include monitorName
+            MONITOR_NAME=$(echo "$entry" | jq -r '.monitorName') 
+
+            API_KEY=$(echo "$ALL_SECRETS" | jq -r ".\"$API_KEY_SECRET_NAME\"")
 
             if [ -z "$API_KEY" ] || [ "$API_KEY" == "null" ]; then
               echo "::error::Secret '$API_KEY_SECRET_NAME' not found in GitHub secrets."
@@ -35,123 +45,97 @@ jobs:
             fi
 
             if [ ! -f "$FILE_PATH" ]; then
-              echo "::error::monitor file '$FILE_PATH' not found."
+              echo "::error::Monitor file '$FILE_PATH' not found."
               exit 1
             fi
 
             echo "📄 Deploying monitor: $FILE_PATH"
 
-            monitor_CONTENT=$(cat "$FILE_PATH")
-            echo "$monitor_CONTENT" | jq . > /dev/null
+            MONITOR_CONTENT=$(cat "$FILE_PATH")
+            echo "$MONITOR_CONTENT" | jq . > /dev/null # Validate JSON
             if [ $? -ne 0 ]; then
               echo "::error::Invalid JSON in $FILE_PATH"
               exit 1
             fi
-
-            # 🧼 Sanitize monitor JSON
-            SANITIZED_monitor=$(echo "$monitor_CONTENT" | jq 'del(.pages[].guid) | .pages[].widgets |= map(del(.id))')
-
-            # 🎯 Update existing monitor using monitorUpdate
+            
+            # --- Get Monitor Details (GUID and Current Status) ---
             if [ -n "$GUID" ] && [ "$GUID" != "null" ]; then
-              echo "🔄 Updating monitor with GUID: $GUID"
+              echo "🔄 Checking current status for GUID: $GUID"
+              
+              # 1. Fetch current status using GUID from manifest
+              
+              QUERY_PAYLOAD=$(jq -n --arg account_id "$ACCOUNT_ID" --arg guid "$GUID" '{
+                query: "query GetMonitorDetails($guid: EntityGuid!) { actor { entity(guid: $guid) { ... on SyntheticMonitor { status } } } }",
+                variables: { guid: $guid }
+              }')
+              
+              RESPONSE=$(curl -s -X POST 'https://api.newrelic.com/graphql' \
+                -H "Content-Type: application/json" \
+                -H "Api-Key: $API_KEY" \
+                --data-raw "$QUERY_PAYLOAD")
 
-              # Create a temporary file to store the GraphQL mutation
-              GRAPHQL_FILE=$(mktemp)
+              # Extract CURRENT_STATUS using jq
+              CURRENT_STATUS=$(echo "$RESPONSE" | jq -r '.data.actor.entity.status')
 
-              # Prepare the GraphQL mutation JSON and write it to the temporary file
-              # We pipe the monitor JSON in via stdin (using '.') to avoid "Argument list too long"
-              echo "Fetching monitor details for: $MONITOR_NAME"
-          QUERY_PAYLOAD=$(cat <<EOF
-          {
-            "query": "query GetMonitorDetails { actor { account(id: $NR_ACCOUNT_ID) { synthetics { monitors(query: {name: \"$MONITOR_NAME\"}) { monitors { guid status } } } } } }",
-            "variables": {}
-          }
-          EOF
-          )
-          
-          RESPONSE=$(curl -s -X POST 'https://api.newrelic.com/graphql' \
-            -H "Content-Type: application/json" \
-            -H "Api-Key: $NR_API_KEY" \
-            --data-raw "$QUERY_PAYLOAD")
+              if [ -z "$CURRENT_STATUS" ] || [ "$CURRENT_STATUS" == "null" ]; then
+                echo "Error: Monitor GUID '$GUID' not found or failed to retrieve details."
+                # Optionally, you could try to create it here instead of failing
+                exit 1 
+              fi
 
-          # Extract GUID and current STATUS using jq
-          MONITOR_GUID=$(echo "$RESPONSE" | jq -r '.data.actor.account.synthetics.monitors.monitors[0].guid')
-          CURRENT_STATUS=$(echo "$RESPONSE" | jq -r '.data.actor.account.synthetics.monitors.monitors[0].status')
-
-          if [ -z "$MONITOR_GUID" ] || [ "$MONITOR_GUID" == "null" ]; then
-            echo "Error: Monitor named '$MONITOR_NAME' not found or failed to retrieve details."
-            exit 1
-          fi
-
-          echo "Found monitor GUID: $MONITOR_GUID"
-          echo "Current Status: $CURRENT_STATUS"
-          
-          # --- 2. Logic: Determine the new status ---
-          NEW_STATUS=""
-          if [ "$CURRENT_STATUS" == "ENABLED" ]; then
-            NEW_STATUS="DISABLED"
-          elif [ "$CURRENT_STATUS" == "DISABLED" ]; then
-            NEW_STATUS="ENABLED"
-          else
-            echo "Warning: Current status '$CURRENT_STATUS' is unexpected. Setting to ENABLED."
-            NEW_STATUS="ENABLED"
-          fi
-          
-          echo "Setting New Status: $NEW_STATUS"
-          
-          # --- 3. Mutation: Execute the update ---
-          MUTATION_PAYLOAD=$(cat <<EOF
-          {
-            "query": "mutation ToggleMonitorStatus(\$monitorGuid: EntityGuid!, \$newStatus: SyntheticsMonitorStatus!) { syntheticsUpdateScriptApiMonitor(guid: \$monitorGuid, monitor: { status: \$newStatus }) { errors { description type } monitor { guid name status } } }",
-            "variables": {
-              "monitorGuid": "$MONITOR_GUID",
-              "newStatus": "$NEW_STATUS"
-            }
-          }
-          EOF
-          ) > "$GRAPHQL_FILE"
-
-              # Send the GraphQL request using curl and the temporary file
+              echo "Found monitor GUID: $GUID"
+              echo "Current Status: $CURRENT_STATUS"
+              
+              # --- 2. Logic: Determine the new status ---
+              NEW_STATUS=""
+              if [ "$CURRENT_STATUS" == "ENABLED" ]; then
+                NEW_STATUS="DISABLED"
+              elif [ "$CURRENT_STATUS" == "DISABLED" ]; then
+                NEW_STATUS="ENABLED"
+              else
+                echo "Warning: Current status '$CURRENT_STATUS' is unexpected. Setting to ENABLED."
+                NEW_STATUS="ENABLED"
+              fi
+              
+              echo "Setting New Status: $NEW_STATUS"
+              
+              # --- 3. Mutation: Execute the update (Toggle Status) ---
+              MUTATION_PAYLOAD=$(jq -n --arg guid "$GUID" --arg new_status "$NEW_STATUS" '{
+                query: "mutation ToggleMonitorStatus($monitorGuid: EntityGuid!, $newStatus: SyntheticsMonitorStatus!) { syntheticsUpdateScriptApiMonitor(guid: $monitorGuid, monitor: { status: $newStatus }) { errors { description type } monitor { guid name status } } }",
+                variables: { monitorGuid: $guid, newStatus: $new_status }
+              }')
+              
               RESPONSE=$(curl -s -X POST https://api.newrelic.com/graphql \
                 -H "Content-Type: application/json" \
                 -H "API-Key: ${API_KEY}" \
-                --data-binary "@$GRAPHQL_FILE")
-
-              # Clean up the temporary file
-              rm "$GRAPHQL_FILE"
+                --data-raw "$MUTATION_PAYLOAD")
 
               echo "📡 API Response: $RESPONSE"
 
-              # 🚨 Error checks
+              # 🚨 Error checks (simplified)
 
-              # Top-level GraphQL errors
-              TOP_LEVEL_ERRORS=$(echo "$RESPONSE" | jq -r '.errors[]?.message')
-              if [ "$TOP_LEVEL_ERRORS" != "null" ] && [ -n "$TOP_LEVEL_ERRORS" ]; then
-                echo "::error::GraphQL top-level error for $FILE_PATH: $TOP_LEVEL_ERRORS"
+              UPDATE_RESULT=$(echo "$RESPONSE" | jq -r '.data.syntheticsUpdateScriptApiMonitor')
+              
+              if [ "$UPDATE_RESULT" == "null" ]; then
+                TOP_LEVEL_ERRORS=$(echo "$RESPONSE" | jq -r '.errors[].message' | tr '\n' ' ')
+                echo "::error::Monitor update failed for $FILE_PATH: $TOP_LEVEL_ERRORS"
                 exit 1
               fi
 
-              # Errors inside monitorUpdate
-              UPDATE_ERRORS=$(echo "$RESPONSE" | jq -r '.data.monitorUpdate.errors[]?.description')
-              if [ "$UPDATE_ERRORS" != "null" ] && [ -n "$UPDATE_ERRORS" ]; then
-                echo "::error::monitor update failed for $FILE_PATH: $UPDATE_ERRORS"
+              UPDATE_ERRORS=$(echo "$RESPONSE" | jq -r '.data.syntheticsUpdateScriptApiMonitor.errors[].description' | tr '\n' ' ')
+              if [ -n "$UPDATE_ERRORS" ] && [ "$UPDATE_ERRORS" != "null" ]; then
+                echo "::error::Monitor update failed for $FILE_PATH: $UPDATE_ERRORS"
                 exit 1
               fi
 
-              # Null monitorUpdate (unexpected)
-              monitor_UPDATE_NULL=$(echo "$RESPONSE" | jq -r '.data.monitorUpdate == null')
-              if [ "$monitor_UPDATE_NULL" == "true" ]; then
-                echo "::error::monitor update failed for $FILE_PATH: monitorUpdate returned null"
-                exit 1
-              fi
-
-              echo "✅ monitor updated successfully."
+              echo "✅ Monitor status toggled successfully to $NEW_STATUS."
 
             else
-              echo "::warning::No GUID provided. Skipping update for $FILE_PATH."
+              echo "::warning::No GUID provided. Skipping status update for $FILE_PATH."
+              # You would put the monitor *creation* logic here if GUID is missing
             fi
 
             echo "-------------------------------------------------------------"
           done
 
-          echo "🎉 monitor deployment complete!"
+          echo "🎉 Monitor deployment complete!"
