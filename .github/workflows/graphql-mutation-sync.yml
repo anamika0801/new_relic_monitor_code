@@ -35,6 +35,11 @@ jobs:
       - name: Install JQ (if not available)
         run: sudo apt-get update && sudo apt-get install -y jq
 
+      - name: Read the monitor script from file
+        run: |
+          MONITOR_SCRIPT=$(cat monitors/ap-api-monitor-conf-script.js)
+          echo "Monitor script loaded successfully."
+
       - name: Update Monitor via NerdGraph
         env:
           NR_API_KEY: ${{ secrets[github.event.inputs.api_key_secret_name] || secrets.NEW_RELIC_API_KEY }}
@@ -42,24 +47,7 @@ jobs:
           NEW_STATUS: ${{ github.event.inputs.monitor_status }}
           NEW_NAME: ${{ github.event.inputs.monitor_name }}
           NEW_PERIOD: ${{ github.event.inputs.monitor_period }}
-          
-          # Monitor script (make sure to escape the script properly)
-          MONITOR_SCRIPT: |
-            // Anamika wants to Import the 'assert' module for validation
-            var assert = require("assert");
-            // Define the options for the HTTP request
-            var options = { url: "https://www.newrelic.com", };
-            // Define the callback function to handle the response
-            function callback(error, response, body) {
-              // Log the HTTP status code to the Synthetics console
-              console.log("Status code: " + response.statusCode);
-              // Assert that the status code is 200
-              assert.equal(response.statusCode, 200, "Expected a 200 OK response");
-              // Log a success message if the test passes
-              console.log("Monitor finished successfully!");
-            }
-            // Make the HTTP GET request
-            $http.get(options, callback);
+          MONITOR_SCRIPT: ${{ env.MONITOR_SCRIPT }}
         
         run: |
           echo "🔄 Preparing to update the monitor fields for GUID: $MONITOR_GUID"
@@ -101,10 +89,7 @@ jobs:
           echo "📡 API Response: $RESPONSE"
 
           # 3. Check for Errors and Confirm Status/Name
-          # Check for errors in the `errors` array
           UPDATE_ERRORS=$(echo "$RESPONSE" | jq -r '.data.syntheticsUpdateScriptApiMonitor.errors[]?.description' | tr '\n' ' ')
-
-          # Extract the final state of the monitor
           FINAL_STATUS=$(echo "$RESPONSE" | jq -r '.data.syntheticsUpdateScriptApiMonitor.monitor.status')
           FINAL_NAME=$(echo "$RESPONSE" | jq -r '.data.syntheticsUpdateScriptApiMonitor.monitor.name')
 
@@ -112,4 +97,9 @@ jobs:
             echo "::error::Monitor update failed: $UPDATE_ERRORS"
             exit 1
           elif [ "$FINAL_STATUS" == "$NEW_STATUS" ] && [ "$FINAL_NAME" == "$NEW_NAME" ]; then
-            echo "✅ Monitor $MONITOR_GUID successfully updated._
+            echo "✅ Monitor $MONITOR_GUID successfully updated. New status: $NEW_STATUS, New name: $NEW_NAME."
+            echo "monitor_guid=$MONITOR_GUID" >> $GITHUB_OUTPUT 
+          else
+            echo "::error::Monitor update failed. Check API response for details."
+            exit 1
+          fi
