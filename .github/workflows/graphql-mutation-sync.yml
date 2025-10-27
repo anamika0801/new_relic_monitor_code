@@ -1,15 +1,14 @@
-name: Disable New Relic Monitor
+name: Update New Relic Monitor
 
 on:
   workflow_dispatch:
     inputs:
       monitor_guid:
-        description: 'GUID of the monitor to disable'
+        description: 'GUID of the monitor'
         required: true
       account_id:
         description: 'New Relic Account ID'
         required: true
-      # You can hardcode the API key name if it's always the same
       api_key_secret_name:
         description: 'GitHub Secret Name for New Relic API Key'
         required: false
@@ -26,15 +25,15 @@ jobs:
       - name: Install JQ (if not available)
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Disable Monitor via NerdGraph
+      - name: Update Monitor via NerdGraph
         env:
           NR_API_KEY: ${{ secrets[github.event.inputs.api_key_secret_name] || secrets.NEW_RELIC_API_KEY }}
           MONITOR_GUID: ${{ github.event.inputs.monitor_guid }}
           ACCOUNT_ID: ${{ github.event.inputs.account_id }}
-          NEW_STATUS: "DISABLED" # <-- Set the desired status
+          NEW_STATUS: "DISABLED" 
         
         run: |
-          echo "📴 Preparing to set monitor $MONITOR_GUID status to $NEW_STATUS..."
+          echo "📴 Preparing to update the monitor fields..."
 
           if [ -z "$NR_API_KEY" ]; then
             echo "::error::New Relic API Key secret not found."
@@ -45,11 +44,10 @@ jobs:
           # This mutation requires the GUID and the new status.
           MUTATION_PAYLOAD=$(jq -n \
             --arg guid "$MONITOR_GUID" \
-            --arg new_status "$NEW_STATUS" \
+            --arg status "$NEW_STATUS" \
             '{
-              query: "mutation UpdateStatus($monitorGuid: EntityGuid!, $newStatus: SyntheticsMonitorStatus!) { syntheticsUpdateScriptApiMonitor(guid: $monitorGuid, monitor: { status: $newStatus }) { monitor { guid name status } errors { description type } } }",
-              variables: { monitorGuid: $guid, newStatus: $new_status }
-            }')
+              query: "mutation UpdateSyntheticMonitor($monitorGuid: EntityGuid!, $newStatus: SyntheticsMonitorStatus!, $newName: String!, $newPeriod: SyntheticsMonitorPeriod!) {syntheticsUpdateScriptApiMonitor(guid: $monitorGuid,monitor: {status: $newStatus,name: $newName,period: $newPeriod}) { errors { description type}monitor {guid name status}}}",
+              variables: { $monitorGuid: guid!, $newStatus: status!, $newName: name!, $newPeriod: period! }}')
 
           # 2. Execute the Mutation using curl
           RESPONSE=$(curl -s -X POST https://api.newrelic.com/graphql \
@@ -59,16 +57,17 @@ jobs:
 
           echo "📡 API Response: $RESPONSE"
 
-          # 3. Check for Errors
+           # 3. Check for Errors and Confirm Status
           UPDATE_ERRORS=$(echo "$RESPONSE" | jq -r '.data.syntheticsUpdateScriptApiMonitor.errors[].description' | tr '\n' ' ')
           FINAL_STATUS=$(echo "$RESPONSE" | jq -r '.data.syntheticsUpdateScriptApiMonitor.monitor.status')
+          FINAL_NAME=$(echo "$RESPONSE" | jq -r '.data.syntheticsUpdateScriptApiMonitor.monitor.name')
 
           if [ -n "$UPDATE_ERRORS" ] && [ "$UPDATE_ERRORS" != "null" ]; then
-            echo "::error::Monitor disabling failed: $UPDATE_ERRORS"
+            echo "::error::Monitor update failed: $UPDATE_ERRORS"
             exit 1
-          elif [ "$FINAL_STATUS" == "$NEW_STATUS" ]; then
-            echo "✅ Monitor $MONITOR_GUID successfully set to $NEW_STATUS."
+          elif [ "$FINAL_STATUS" == "$NEW_STATUS" ] && [ "$FINAL_NAME" == "$NEW_NAME" ]; then
+            echo "✅ Monitor $MONITOR_GUID successfully updated to status: $NEW_STATUS and name: $NEW_NAME."
           else
-            echo "::error::Monitor disabling failed for unknown reason. Check API response."
+            echo "::error::Monitor update failed. Check API response for details."
             exit 1
           fi
