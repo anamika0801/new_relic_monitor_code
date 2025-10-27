@@ -77,7 +77,7 @@ jobs:
             --arg period "$NEW_PERIOD" \
             --arg script "$MONITOR_SCRIPT" \
             '{
-              query: "mutation UpdateSyntheticMonitor($monitorGuid: ID!, $monitorInput: SyntheticsUpdateScriptApiMonitorInput!) {\n  syntheticsUpdateScriptApiMonitor(\n    guid: $monitorGuid\n    monitor: $monitorInput\n  ) {\n    errors {\n      description\n      type\n    }\n    monitor {\n      guid\n      name\n      status\n    }\n  }\n}",
+              query: "mutation UpdateSyntheticMonitor($monitorGuid: EntityGuid!, $monitorInput: SyntheticsUpdateScriptApiMonitorInput!) {\n  syntheticsUpdateScriptApiMonitor(\n    guid: $monitorGuid\n    monitor: $monitorInput\n  ) {\n    errors {\n      description\n      type\n    }\n    monitor {\n      guid\n      name\n      status\n    }\n  }\n}",
               variables: {
                 monitorGuid: $guid,
                 monitorInput: {
@@ -112,10 +112,4 @@ jobs:
             echo "::error::Monitor update failed: $UPDATE_ERRORS"
             exit 1
           elif [ "$FINAL_STATUS" == "$NEW_STATUS" ] && [ "$FINAL_NAME" == "$NEW_NAME" ]; then
-            echo "✅ Monitor $MONITOR_GUID successfully updated. New status: $NEW_STATUS, New name: $NEW_NAME."
-            # Optionally output the GUID
-            echo "monitor_guid=$MONITOR_GUID" >> $GITHUB_OUTPUT 
-          else
-            echo "::error::Monitor update failed. Check API response for details."
-            exit 1
-          fi
+            echo "✅ Monitor $MONITOR_GUID successfully updated._
