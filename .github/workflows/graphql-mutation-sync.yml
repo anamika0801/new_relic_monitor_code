@@ -45,7 +45,7 @@ jobs:
 
           # Inline the JavaScript code as a multiline string
           MONITOR_SCRIPT: |
-            // Anamika wants to Import the 'assert' module for validation
+            //Import the 'assert' module for validation
             var assert = require("assert");
 
             // Define the options for the HTTP request
