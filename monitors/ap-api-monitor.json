@@ -1,12 +1,12 @@
 {
-    "data": {
-        "syntheticsUpdateScriptApiMonitor": {
-            "errors": [],
-            "monitor": {
-                "guid": "NzI3MzU0MHxTWU5USHxNT05JVE9SfGUyNDU3NTQ2LTNiMDMtNDRlMi1hMjBhLWNkYjhkYzk0OWYwNw",
-                "name": "sli.tracking.new_relic",
-                "status": "DISABLED"
-            }
-        }
+  "data": {
+    "syntheticsUpdateScriptApiMonitor": {
+      "errors": [],
+      "monitor": {
+        "guid": "NzI3MzU0MHxTWU5USHxNT05JVE9SfGUyNDU3NTQ2LTNiMDMtNDRlMi1hMjBhLWNkYjhkYzk0OWYwNw",
+        "name": "sli.tracking.new_relic_ap",
+        "status": "ENABLED"
+      }
     }
+  }
 }
