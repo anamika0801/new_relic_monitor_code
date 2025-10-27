@@ -1,6 +1,7 @@
 // monitors/api-check.js
 /**
  * Scripted API Monitor to check a sample public API.
+ * Checking
  */
 const assert = require('assert');
 
